@@ -1,6 +1,8 @@
 import collections
 import json
 import os
+import random
+import re
 import sys
 import time
 
@@ -198,6 +200,50 @@ def wordcloud(messages, outdir):
     plt.savefig(os.path.join(outdir, "wordcloud.png"))
 
 
+def markov_generate_message(data):
+    message = ""
+
+    # regexp start and end string characters used to indicate start and end of
+    # message
+    word = "^"
+    while word != "$":
+        if word not in ".,":
+            message += " "
+        message += word
+
+        word_list = list(data[word])
+        prob_dist = list(data[word].values())
+
+        word = random.choices(population=word_list, weights=prob_dist, k=1)[0]
+
+    return message[3:].capitalize()
+
+
+def markov_chain(messages, outdir):
+    # { name: { word: { following_word: 0 } } }
+    data = collections.defaultdict(
+        lambda: collections.defaultdict(
+            lambda: collections.defaultdict(lambda: 0)
+        )
+    )
+    pattern = re.compile(r"[a-z\'\-]+|[.,]+")
+    for m in messages:
+        prev = "^"
+        for word in re.findall(pattern, m["content"].lower()):
+            data[m["sender_name"]][prev][word] += 1
+            prev = word
+        data[m["sender_name"]][prev]["$"] += 1
+
+    generated = {}
+    for name in data:
+        generated[name] = [
+            markov_generate_message(data[name]) for _ in range(10)
+        ]
+
+    with open(os.path.join(outdir, "markov_messages.json"), "w") as f:
+        json.dump(generated, f, indent=4)
+
+
 # Check for plain text messages only
 def garbage_message(m):
     if not m.get("type") == "Generic":
@@ -262,6 +308,7 @@ def main():
         pie_chart_words,
         words_per_message,
         stackplot,
+        markov_chain
     ]
 
     for f in outputs:

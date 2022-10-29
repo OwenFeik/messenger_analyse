@@ -275,6 +275,7 @@ def garbage_message(m):
         " created the group.",
         " created a plan.",
         " set the nickname for ",
+        " to your message "
     ]
 
     return any(phrase in text for phrase in chat_action_phrases)

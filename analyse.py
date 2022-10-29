@@ -244,6 +244,20 @@ def markov_chain(messages, outdir):
         json.dump(generated, f, indent=4)
 
 
+def kick_counts(messages, outdir):
+    # {person: n}
+    kicked = collections.defaultdict(lambda: 0)
+    for m in messages:
+        if m["type"] == "Unsubscribe":
+            name = m["users"][0]["name"]
+            if m["content"].endswith("from the group."):
+                kicked[name] += 1
+
+    plot_pie_chart_with_values(kicked)
+    plt.title("Times Kicked")
+    plt.savefig(os.path.join(outdir, "proportion_kicked.png"))
+
+
 # Check for plain text messages only
 def garbage_message(m):
     if not m.get("type") == "Generic":
@@ -279,7 +293,7 @@ def get_file_messages(fp):
 
         data = json.loads(raw.decode(encoding="utf-8"))
 
-    return list(filter(good_message, data.get("messages", [])))
+    return data.get("messages", [])
 
 
 def get_folder_messages(input_dir):
@@ -296,9 +310,18 @@ def main():
     else:
         input_dir = os.path.dirname(__file__)
 
-    messages = get_folder_messages(input_dir)
+    all_messages = get_folder_messages(input_dir)
+    good_messages = list(filter(good_message, all_messages))
 
     OUTDIR = "out"
+    if os.path.exists(OUTDIR):
+        if not os.path.isdir(OUTDIR):
+            print('Output directory "out" exists and is not a directory.')
+            exit(1)
+    else:
+        os.makedirs(OUTDIR)
+        with open(os.path.join(OUTDIR, ".gitignore")) as f:
+            f.write("*")
 
     plt.style.use("dark_background")
 
@@ -308,12 +331,14 @@ def main():
         pie_chart_words,
         words_per_message,
         stackplot,
-        markov_chain
+        markov_chain,
     ]
 
     for f in outputs:
         new_fig()
-        f(messages, OUTDIR)
+        f(good_messages, OUTDIR)
+
+    kick_counts(all_messages, OUTDIR)
 
 
 if __name__ == "__main__":

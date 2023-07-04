@@ -283,40 +283,83 @@ def good_message(m):
     return not garbage_message(m)
 
 
-def get_file_messages(fp):
-    # Substitution of messenger's quote mark encoding doesn't work when not read
-    # as binary
-    with open(fp, "rb") as f:
-        raw = f.read()
-        raw = raw.replace(b"\u00e2\u0080\u0099", b"'")
-
-        data = json.loads(raw.decode(encoding="utf-8"))
-
-    return data.get("messages", [])
-
-
-def get_folder_messages(input_dir):
+def get_messages_and_participants(input_dir):
     files = [f for f in os.listdir(input_dir) if f.endswith(".json") and f.startswith("message_")]
     messages = []
-    for f in files:
-        messages.extend(get_file_messages(os.path.join(input_dir, f)))
-    return messages
-
-def get_participants(input_dir):
-    files = [f for f in os.listdir(input_dir) if f.endswith(".json") and f.startswith("message_")]
     participants = set()
+
     for f in files:
-        print(os.path.join(input_dir, f))
-        with open(os.path.join(input_dir, f), "r") as f:
-            data = json.load(f)
+        file_path = os.path.join(input_dir, f)
+
+        with open(file_path, "rb") as file:
+            raw = file.read()
+            raw = raw.replace(b"\u00e2\u0080\u0099", b"'")
+            data = json.loads(raw.decode(encoding="utf-8"))
+
+            messages.extend(data.get("messages", []))
+
             for participant in data["participants"]:
                 participants.add(participant["name"])
-    return participants
 
+    return messages, participants
 
-def save_nicknames(messages, input_dir, OUTDIR):
+def save_nicknames(messages, participants, input_dir, outdir):
     nicknames = {}
-    participants = set(get_participants(input_dir))  # Copy the participants set
+
+    def append_nickname(person, nickname_entry):
+        if person not in nicknames:
+            nicknames[person] = []
+
+        nicknames[person].append(nickname_entry)
+
+    def append_output(output, nickname_entries):
+        longest_standing_nickname = None
+        longest_standing_days = 0
+        longest_standing_start_date = None
+        longest_standing_end_date = None
+
+        for i in range(len(nickname_entries) - 1):
+            current_entry = nickname_entries[i]
+            next_entry = nickname_entries[i + 1]
+            current_timestamp = current_entry["timestamp"]
+            next_timestamp = next_entry["timestamp"]
+            days_diff = (next_timestamp - current_timestamp) // (1000 * 60 * 60 * 24)
+
+            if days_diff > longest_standing_days:
+                longest_standing_nickname = current_entry["nickname"]
+                longest_standing_days = days_diff
+                longest_standing_start_date = timestamp_to_date(int(current_entry["timestamp"]))
+                longest_standing_end_date = timestamp_to_date(int(next_entry["timestamp"]))
+
+        if nickname_entries:
+            final_entry = nickname_entries[-1]
+            final_timestamp = final_entry["timestamp"]
+            final_nickname = final_entry["nickname"]
+            final_start_date = timestamp_to_date(int(final_timestamp))
+            current_date = datetime.now().strftime("%d/%m/%Y")
+            final_duration = (datetime.now() - datetime.fromtimestamp(int(final_timestamp) / 1000)).days
+
+            if final_duration > longest_standing_days:
+                longest_standing_nickname = final_nickname
+                longest_standing_days = final_duration
+                longest_standing_start_date = final_start_date
+                longest_standing_end_date = current_date
+
+        if longest_standing_nickname:
+            output += f"Longest Standing Nickname: {longest_standing_nickname} " \
+                      f"({longest_standing_days} days, from {longest_standing_start_date} " \
+                      f"to {longest_standing_end_date})\n"
+
+        for entry in nickname_entries:
+            timestamp = entry["timestamp"]
+            nickname = entry["nickname"]
+            date_str = timestamp_to_date(int(timestamp))
+
+            output += f"{date_str} - {nickname.rstrip('.')}\n"
+
+        output += "\n"
+
+        return output
 
     for message in messages:
         content = message.get("content", "")
@@ -332,26 +375,19 @@ def save_nicknames(messages, input_dir, OUTDIR):
                 "nickname": nickname
             }
 
-            if person not in nicknames:
-                nicknames[person] = []
-
-            nicknames[person].append(nickname_entry)
-
-            # Remove the person from the participants set
+            append_nickname(person, nickname_entry)
             participants.discard(person)
 
         elif "set your nickname to" in content:
-            parts = content.split(" set your nickname to ")
-            nickname = parts[1].rstrip(".")  # Remove dot at the end of the nickname
-            nickname_entry = {
-                "timestamp": timestamp,
-                "nickname": nickname
-            }
+            parts = content.split("set your nickname to")
+            if len(parts) == 2:
+                nickname = parts[1].strip(".")
+                nickname_entry = {
+                    "timestamp": timestamp,
+                    "nickname": nickname
+                }
 
-            if "owner" not in nicknames:
-                nicknames["owner"] = []
-
-            nicknames["owner"].append(nickname_entry)
+                append_nickname("owner", nickname_entry)
 
     owner = None
     owner_entries = []
@@ -360,131 +396,29 @@ def save_nicknames(messages, input_dir, OUTDIR):
         owner = participants.pop()
 
     if owner:
-        owner_entries = nicknames.get("owner", [])  # Retrieve download owner's nicknames
-        owner_entries = sorted(owner_entries, key=lambda x: x["timestamp"])  # Sort download owner's nicknames chronologically
+        owner_entries = nicknames.get("owner", [])
+        owner_entries = sorted(owner_entries, key=lambda x: x["timestamp"])
 
     output = ""
 
-    # Append the download owner's name
-    output += f"{owner} ({len(owner_entries)} nicknames):\n"
-
-    # Append the longest standing nickname for the download owner
-    owner_longest_standing_nickname = None
-    owner_longest_standing_days = 0
-    owner_longest_standing_start_date = None
-    owner_longest_standing_end_date = None
-
-    for i in range(len(owner_entries) - 1):
-        current_entry = owner_entries[i]
-        next_entry = owner_entries[i + 1]
-        current_timestamp = current_entry["timestamp"]
-        next_timestamp = next_entry["timestamp"]
-        days_diff = (next_timestamp - current_timestamp) // (1000 * 60 * 60 * 24)
-
-        if days_diff > owner_longest_standing_days:
-            owner_longest_standing_nickname = current_entry["nickname"]
-            owner_longest_standing_days = days_diff
-            owner_longest_standing_start_date = timestamp_to_date(int(current_entry["timestamp"]))
-            owner_longest_standing_end_date = timestamp_to_date(int(next_entry["timestamp"]))
-
-    # Check the duration of the final nickname for the download owner until the current date
-    if owner_entries:
-        final_entry = owner_entries[-1]
-        final_timestamp = final_entry["timestamp"]
-        final_nickname = final_entry["nickname"]
-        final_start_date = timestamp_to_date(int(final_timestamp))
-        current_date = datetime.now().strftime("%d/%m/%Y")
-        final_duration = (datetime.now() - datetime.fromtimestamp(int(final_timestamp) / 1000)).days
-
-        if final_duration > owner_longest_standing_days:
-            owner_longest_standing_nickname = final_nickname
-            owner_longest_standing_days = final_duration
-            owner_longest_standing_start_date = final_start_date
-            owner_longest_standing_end_date = current_date
-
-    # Append the longest standing nickname for the download owner
-    if owner_longest_standing_nickname:
-        output += f"Longest Standing Nickname: {owner_longest_standing_nickname} " \
-                  f"({owner_longest_standing_days} days, from {owner_longest_standing_start_date} " \
-                  f"to {owner_longest_standing_end_date})\n"
-
-    # Append all download owner's nicknames and their dates
-    for entry in owner_entries:
-        timestamp = entry["timestamp"]
-        nickname = entry["nickname"]
-        date_str = timestamp_to_date(int(timestamp))
-
-        output += f"{date_str} - {nickname.rstrip('.')}\n"
-
-    output += "\n"  # Add double spacing
+    if owner:
+        output += f"{owner} ({len(owner_entries)} nicknames):\n"
+        output = append_output(output, owner_entries)
 
     for person, entries in nicknames.items():
-        if person == "owner":
-            continue  # Skip the download owner as we have already processed their nicknames
+        if person == "owner" or person == owner:
+            continue
 
         entries = sorted(entries, key=lambda x: x["timestamp"])
         count = len(entries)
-
-        # Find the longest standing nickname for other participants
-        longest_standing_nickname = None
-        longest_standing_days = 0
-        longest_standing_start_date = None
-        longest_standing_end_date = None
-
-        for i in range(count - 1):
-            current_entry = entries[i]
-            next_entry = entries[i + 1]
-            current_timestamp = current_entry["timestamp"]
-            next_timestamp = next_entry["timestamp"]
-            days_diff = (next_timestamp - current_timestamp) // (1000 * 60 * 60 * 24)
-
-            if days_diff > longest_standing_days:
-                longest_standing_nickname = current_entry["nickname"]
-                longest_standing_days = days_diff
-                longest_standing_start_date = timestamp_to_date(int(current_entry["timestamp"]))
-                longest_standing_end_date = timestamp_to_date(int(next_entry["timestamp"]))
-
-        # Check the duration of the final nickname until the current date for other participants
-        if count > 0:
-            final_entry = entries[-1]
-            final_timestamp = final_entry["timestamp"]
-            final_nickname = final_entry["nickname"]
-            final_start_date = timestamp_to_date(int(final_timestamp))
-            current_date = datetime.now().strftime("%d/%m/%Y")
-            final_duration = (datetime.now() - datetime.fromtimestamp(int(final_timestamp) / 1000)).days
-
-            if final_duration > longest_standing_days:
-                longest_standing_nickname = final_nickname
-                longest_standing_days = final_duration
-                longest_standing_start_date = final_start_date
-                longest_standing_end_date = current_date
-
         output += f"{person} ({count} nicknames):\n"
+        output = append_output(output, entries)
 
-        # Append the longest standing nickname at the top
-        if longest_standing_nickname:
-            output += f"Longest Standing Nickname: {longest_standing_nickname} " \
-                      f"({longest_standing_days} days, from {longest_standing_start_date} " \
-                      f"to {longest_standing_end_date})\n"
-
-        # Append all nicknames and their dates for other participants
-        for entry in entries:
-            timestamp = entry["timestamp"]
-            nickname = entry["nickname"]
-            date_str = timestamp_to_date(int(timestamp))
-
-            output += f"{date_str} - {nickname.rstrip('.')}\n"
-
-        output += "\n"  # Add double spacing
-
-    # Save the output to a text file
-    with open(os.path.join(OUTDIR, f"{os.path.basename(input_dir)}_nicknames.txt"), "w", encoding="utf-8", errors="replace") as file:
-        file.write(output)    
-
+    with open(os.path.join(outdir, f"{os.path.basename(input_dir)}_nicknames.txt"), "w", encoding="utf-8", errors="replace") as file:
+        file.write(output)
 
 def timestamp_to_date(timestamp):
     return datetime.fromtimestamp(timestamp / 1000).strftime("%d/%m/%Y")
-
 
 
 def main():
@@ -493,23 +427,19 @@ def main():
     else:
         input_dir = os.path.dirname(__file__)
 
-    all_messages = get_folder_messages(input_dir)
+    all_messages, participants = get_messages_and_participants(input_dir)
     good_messages = list(filter(good_message, all_messages))
 
-    OUTDIR = "out"
+    outdir = "out"
 
-    # Check if the OUTDIR already exists and is not a directory
-    if os.path.exists(OUTDIR):
-        if not os.path.isdir(OUTDIR):
+    if os.path.exists(outdir):
+        if not os.path.isdir(outdir):
             print('Output directory "out" exists and is not a directory.')
             exit(1)
     else:
-        os.makedirs(OUTDIR)
-
-    # Create .gitignore file and add OUTDIR to it
-    gitignore_path = os.path.join(os.getcwd(), ".gitignore")
-    with open(gitignore_path, "a") as gitignore_file:
-        gitignore_file.write(f"{OUTDIR}/\n")
+        os.makedirs(outdir)
+        with open(os.path.join(outdir, ".gitignore")) as f:
+            f.write("*")
         
     plt.style.use("dark_background")
 
@@ -524,11 +454,11 @@ def main():
 
     for f in outputs:
         new_fig()
-        f(good_messages, OUTDIR)
+        f(good_messages, outdir)
 
-    kick_counts(all_messages, OUTDIR)
+    kick_counts(all_messages, outdir)
 
-    save_nicknames(all_messages, input_dir, OUTDIR)
+    save_nicknames(all_messages, participants, input_dir, outdir)
 
 
 if __name__ == "__main__":
